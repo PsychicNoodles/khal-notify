@@ -35,6 +35,14 @@ impl KhalEvent {
     fn is_all_day(&self) -> bool {
         self.all_day
     }
+
+    fn formatted_title(&self) -> String {
+        if self.repeat_symbol.is_empty() {
+            self.title.clone()
+        } else {
+            self.title.clone() + " " + &self.repeat_symbol
+        }
+    }
 }
 
 pub fn main() {
@@ -42,7 +50,7 @@ pub fn main() {
         .map(|d| d.config_dir().join(Path::new("khal/config")))
         .map(|pb| pb.to_str().map(str::to_owned))
         .flatten()
-        .unwrap_or("khal.conf".to_owned());
+        .unwrap_or_else(|| "khal.conf".to_owned());
     let matches = App::new("khal-notify")
         .version("1.0")
         .author("Mattori Birnbaum <mattori.birnbaum@gmail.com>")
@@ -125,7 +133,7 @@ pub fn main() {
             .expect("utc offset of unexpected format"),
     );
 
-    let target = if at.contains(":") || at.contains(" ") {
+    let target = if at.contains(':') || at.contains(' ') {
         PrimitiveDateTime::parse(at, "%F %R")
             .expect("datetime offset of unexpected format")
             .assume_offset(utc_offset)
@@ -143,8 +151,9 @@ pub fn main() {
             &target.format(date_format),
             &target.format(time_format),
             "--notstarted",
+            "--json",
         ])
-        .args(iter::once("--json").chain(array::IntoIter::new(JSON_FIELDS).intersperse("--json")))
+        .args(array::IntoIter::new(JSON_FIELDS).intersperse("--json"))
         .output()
         .expect("could not execute khal")
         .stdout;
@@ -159,23 +168,18 @@ pub fn main() {
     let mut handles = Vec::with_capacity(events.len());
     for event in events {
         let handle = thread::spawn(move || {
-            let mut title =
-                String::with_capacity(event.title.len() + event.repeat_symbol.len() + 1);
-            title += &event.title;
-            if !event.repeat_symbol.is_empty() {
-                title += " ";
-                title += &event.repeat_symbol;
-            }
+            let title = event.formatted_title();
 
             let url_regex = Regex::new(URL_REGEX).unwrap();
             let urls: Vec<_> = url_regex.captures_iter(&event.description).collect();
+
             let mut short_desc = String::with_capacity(desc_chars + 100);
             short_desc += &event.description[..std::cmp::min(desc_chars, event.description.len())];
             if event.description.len() > desc_chars {
                 short_desc += "...";
             }
             if !event.all_day {
-                if !short_desc.ends_with("\n") {
+                if !short_desc.ends_with('\n') {
                     short_desc += "\n";
                 }
                 short_desc += &event.start_end_time_style;
@@ -187,20 +191,20 @@ pub fn main() {
                 .flatten()
                 .map(|url| url.as_str())
                 .collect();
-            url_matches.sort();
+            url_matches.sort_unstable();
             url_matches.dedup();
 
             let actions = if urls.is_empty() {
                 Vec::new()
             } else {
-                iter::once("--action".to_owned())
+                iter::once(String::from("--action"))
                     .chain(
                         url_matches
                             .iter()
                             .enumerate()
                             .map(|(i, url)| format!("{}:{}", i, url)),
                     )
-                    .chain(iter::once("--".to_owned()))
+                    .chain(iter::once(String::from("--")))
                     .collect()
             };
 
@@ -215,7 +219,7 @@ pub fn main() {
                 let action_result = std::str::from_utf8(&notify_output)
                     .expect("notify-send output of non-text format")
                     .lines()
-                    .nth(0)
+                    .next()
                     .expect("notify-send output of unexpected format");
                 if action_result != "closed" {
                     let chosen_action_index = action_result
