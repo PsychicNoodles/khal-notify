@@ -96,13 +96,19 @@ pub fn main() {
         .arg(
             Arg::with_name("AT")
                 .value_name("TIME")
+                .multiple(true)
                 .help("minutes in the future or datetime (YYYY-mm-dd HH:MM) to check for events")
                 .default_value(MINUTE_OFFSET),
         )
         .get_matches();
 
     let config = matches.value_of("config").unwrap();
-    let at = matches.value_of("AT").unwrap();
+    let at: String = matches
+        .values_of("AT")
+        .unwrap()
+        .into_iter()
+        .intersperse(" ")
+        .collect();
     let desc_chars = matches
         .value_of("description length")
         .unwrap()
