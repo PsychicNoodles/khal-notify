@@ -4,10 +4,11 @@ use clap::{App, Arg};
 use regex::Regex;
 use serde::Deserialize;
 use std::process::Command;
-use std::thread;
 use std::{array, time::Duration};
 use std::{iter, path::Path};
+use std::{sync::Arc, thread};
 use time::{OffsetDateTime, PrimitiveDateTime, UtcOffset};
+use unicode_segmentation::UnicodeSegmentation;
 
 const MINUTE_OFFSET: &str = "10";
 const DESC_CHARS: &str = "200";
@@ -102,6 +103,16 @@ pub fn main() {
                 .default_value("+9"),
         )
         .arg(
+            Arg::with_name("strip regex")
+                .short("s")
+                .long("strip-regex")
+                .value_name("REGEX")
+                .multiple(true)
+                .number_of_values(1)
+                .allow_hyphen_values(true)
+                .help("regex for text to strip from event descriptions"),
+        )
+        .arg(
             Arg::with_name("AT")
                 .value_name("TIME")
                 .multiple(true)
@@ -132,6 +143,14 @@ pub fn main() {
             .parse::<i8>()
             .expect("utc offset of unexpected format"),
     );
+    let strip_regexes = Arc::new(
+        matches
+            .values_of("strip regex")
+            .map(|i| i.map(Regex::new).flatten().collect())
+            .unwrap_or_else(|| Vec::new()),
+    );
+
+    let url_regex = Arc::new(Regex::new(URL_REGEX).unwrap());
 
     let target = if at.contains(':') || at.contains(' ') {
         PrimitiveDateTime::parse(at, "%F %R")
@@ -167,16 +186,24 @@ pub fn main() {
 
     let mut handles = Vec::with_capacity(events.len());
     for event in events {
+        let strip_regexes = Arc::clone(&strip_regexes);
+        let url_regex = Arc::clone(&url_regex);
         let handle = thread::spawn(move || {
             let title = event.formatted_title();
 
-            let url_regex = Regex::new(URL_REGEX).unwrap();
             let urls: Vec<_> = url_regex.captures_iter(&event.description).collect();
 
-            let mut short_desc = String::with_capacity(desc_chars + 100);
-            short_desc += &event.description[..std::cmp::min(desc_chars, event.description.len())];
-            if event.description.len() > desc_chars {
-                short_desc += "...";
+            let mut short_desc = strip_regexes
+                .iter()
+                .fold(event.description.clone(), |d, regex| {
+                    regex.replace_all(&d, "").into_owned()
+                });
+            if desc_chars < short_desc.len() {
+                short_desc = short_desc
+                    .graphemes(true)
+                    .take(desc_chars)
+                    .collect::<String>()
+                    + "...";
             }
             if !event.all_day {
                 if !short_desc.ends_with('\n') {
