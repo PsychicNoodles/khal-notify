@@ -3,9 +3,9 @@
 use clap::{App, Arg};
 use regex::Regex;
 use serde::Deserialize;
+use std::path::Path;
 use std::process::Command;
 use std::{array, time::Duration};
-use std::{iter, path::Path};
 use std::{sync::Arc, thread};
 use time::{OffsetDateTime, PrimitiveDateTime, UtcOffset};
 use unicode_segmentation::UnicodeSegmentation;
@@ -191,20 +191,25 @@ pub fn main() {
         let handle = thread::spawn(move || {
             let title = event.formatted_title();
 
-            let urls: Vec<_> = url_regex.captures_iter(&event.description).collect();
-
-            let mut short_desc = strip_regexes
+            let stripped_desc = strip_regexes
                 .iter()
                 .fold(event.description.clone(), |d, regex| {
                     regex.replace_all(&d, "").into_owned()
                 });
-            if desc_chars < short_desc.len() {
-                short_desc = short_desc
-                    .graphemes(true)
-                    .take(desc_chars)
-                    .collect::<String>()
-                    + "...";
-            }
+            let mut short_desc = if desc_chars < stripped_desc.len() {
+                let mut desc_graphemes = stripped_desc.graphemes(true);
+                let mut short_desc =
+                    desc_graphemes.by_ref().take(desc_chars).collect::<String>() + "...";
+                for link in find_links(
+                    url_regex,
+                    desc_graphemes.by_ref().skip(desc_chars).collect(),
+                ) {
+                    short_desc += &link
+                }
+                short_desc
+            } else {
+                stripped_desc
+            };
             if !event.all_day {
                 if !short_desc.ends_with('\n') {
                     short_desc += "\n";
@@ -212,57 +217,32 @@ pub fn main() {
                 short_desc += &event.start_end_time_style;
             }
 
-            let mut url_matches: Vec<_> = urls
-                .iter()
-                .map(|cap| cap.get(0))
-                .flatten()
-                .map(|url| url.as_str())
-                .collect();
-            url_matches.sort_unstable();
-            url_matches.dedup();
-
-            let actions = if urls.is_empty() {
-                Vec::new()
-            } else {
-                iter::once(String::from("--action"))
-                    .chain(
-                        url_matches
-                            .iter()
-                            .enumerate()
-                            .map(|(i, url)| format!("{}:{}", i, url)),
-                    )
-                    .chain(iter::once(String::from("--")))
-                    .collect()
-            };
-
-            let notify_output = Command::new("notify-send.py")
-                .args(actions.iter())
+            Command::new("notify-send")
                 .args(&[title, short_desc])
-                .output()
+                .spawn()
                 .expect("could not create notification")
-                .stdout;
-
-            if !urls.is_empty() {
-                let action_result = std::str::from_utf8(&notify_output)
-                    .expect("notify-send output of non-text format")
-                    .lines()
-                    .next()
-                    .expect("notify-send output of unexpected format");
-                if action_result != "closed" {
-                    let chosen_action_index = action_result
-                        .parse::<usize>()
-                        .expect("notify-send output of non-numeric format");
-                    let chosen_action = url_matches
-                        .get(chosen_action_index)
-                        .expect("notify-send returned invalid action");
-
-                    opener::open(chosen_action).expect("could not open chosen action");
-                }
-            }
+                .wait()
+                .expect("notification process ended unexpectedly");
         });
         handles.push(handle);
     }
     handles
         .into_iter()
         .for_each(|handle| handle.join().expect("failed to join notify thread"));
+}
+
+fn find_links(url_regex: Arc<Regex>, rem_desc: String) -> Vec<String> {
+    let urls: Vec<_> = url_regex.captures_iter(&rem_desc).collect();
+    let mut url_matches: Vec<_> = urls
+        .iter()
+        .map(|cap| cap.get(0))
+        .flatten()
+        .map(|url| url.as_str())
+        .collect();
+    url_matches.sort_unstable();
+    url_matches.dedup();
+    url_matches
+        .iter()
+        .map(|url| format!("<a href=\"{}\"></a>", url))
+        .collect()
 }
